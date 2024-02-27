@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use clap::{command, Parser, Subcommand};
-use miette::{Diagnostic, Result};
+use miette::{bail, Diagnostic, Result};
 use thiserror::Error;
 use walkdir::WalkDir;
 
@@ -55,10 +55,14 @@ enum DofiError {
     
     #[error(transparent)]
     #[diagnostic(code(dofi::walkdir_error))]
-    ListDirectoryFailed(#[from] walkdir::Error)
+    ListDirectoryFailed(#[from] walkdir::Error),
+
+    #[error("File '{}' is not a dotfile", .0.display())]
+    #[diagnostic(code(dofi::file_is_not_a_dotfile))]
+    FileIsNotADotfile(PathBuf)
 }
 
-fn main() -> miette::Result<()> {
+fn main() -> Result<()> {
     let args = Args::parse();
 
     let base_directory = args.base_directory.canonicalize().map_err(|e| DofiError::InvalidBaseDirectory(e, args.base_directory))?;
@@ -66,7 +70,10 @@ fn main() -> miette::Result<()> {
 
     match args.command {
         Commands::Add { file } => {
-            let file = resolve_file(file)?;
+            if file.is_symlink() || !file.is_file() {
+                bail!(DofiError::FileIsNotRegular(file.to_path_buf()))
+            }
+            let file = file.canonicalize().map_err(DofiError::GenericIoError)?;
             add_file(&file, &base_directory, &dotfiles_directory)
         }
         Commands::Link => {
@@ -76,7 +83,10 @@ fn main() -> miette::Result<()> {
             list_files(&dotfiles_directory)
         },
         Commands::Remove { file } => {
-            let file = resolve_file(file)?;
+            if !file.is_file() {
+                bail!(DofiError::FileIsNotRegular(file.to_path_buf()))
+            }
+            let file = file.canonicalize().map_err(DofiError::GenericIoError)?;
             remove_file(&file, &base_directory, &dotfiles_directory)
         }
     }?;
@@ -84,18 +94,18 @@ fn main() -> miette::Result<()> {
     Ok(())
 }
 
-fn resolve_file(file: PathBuf) -> Result<PathBuf, DofiError> {
-    if file.is_symlink() || !file.is_file() {
-        return Err(DofiError::FileIsNotRegular(file.to_path_buf()))
+fn remove_file(file: &Path, base_directory: &Path, dotfiles_directory: &Path) -> Result<(), DofiError> {
+    if !file.starts_with(dotfiles_directory) {
+        return Err(DofiError::FileIsNotADotfile(file.to_path_buf()))
     }
-    
-    let file = file.canonicalize().map_err(DofiError::GenericIoError)?;
 
-    Ok(file)
-}
+    std::fs::remove_file(file)?;
 
-fn remove_file(file: &Path, base: &Path, dotfiles: &Path) -> Result<(), DofiError> {
-    todo!()
+    let symlink = file.strip_prefix(dotfiles_directory).map(|relative_file| base_directory.join(relative_file)).map_err(|_| DofiError::BaseIsNotPrefixOfFile(base_directory.to_path_buf(), file.to_path_buf()))?;
+
+    let _ = std::fs::remove_file(symlink);
+
+    Ok(())
 }
 
 fn add_file(file: &Path, base_directory: &Path, dotfiles_directory: &Path) -> Result<(), DofiError> {
@@ -114,15 +124,40 @@ fn add_file(file: &Path, base_directory: &Path, dotfiles_directory: &Path) -> Re
     Ok(())
 }
 
-fn link_files<P>(base_directory: P, dotfiles_directory: P) -> Result<(), DofiError> where P: AsRef<Path> {
-    todo!()
+fn link_files(base_directory: &Path, dotfiles_directory: &Path) -> Result<(), DofiError> {
+    let walker = WalkDir::new(dotfiles_directory).into_iter().filter(|e| {
+        if let Ok(e) = e {
+            e.file_type().is_file()
+        } else {
+            true
+        }
+    });
+
+    for entry in walker {
+        let file = entry?;
+
+        let symlink = file
+            .path()
+            .strip_prefix(dotfiles_directory)
+            .map(|relative_file| base_directory.join(relative_file))
+            .map_err(|_| DofiError::BaseIsNotPrefixOfFile(base_directory.to_path_buf(), file.path().to_path_buf()))?;
+
+        if let Some(parent) = symlink.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        std::os::unix::fs::symlink(file.path(), symlink)?
+    }
+
+    Ok(())
 }
 
 fn list_files(dotfiles_directory: &Path) -> Result<(), DofiError> {
     let walker = WalkDir::new(dotfiles_directory).into_iter().filter(|e| {
-        match e {
-            Ok(e) => e.file_type().is_file(),
-            _ => true
+        if let Ok(e) = e {
+            e.file_type().is_file()
+        } else {
+            true
         }
     });
 
