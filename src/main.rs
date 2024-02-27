@@ -98,7 +98,7 @@ fn remove_file(file: &Path, base: &Path, dotfiles: &Path) -> Result<(), DofiErro
     todo!()
 }
 
-fn add_file<P>(file: P, base_directory: P, dotfiles_directory: P) -> Result<(), DofiError> where P: AsRef<Path> {
+fn add_file(file: &Path, base_directory: &Path, dotfiles_directory: &Path) -> Result<(), DofiError> {
     let new_file = file
         .strip_prefix(base_directory)
         .map(|relative_file| dotfiles_directory.join(relative_file))
