@@ -1,6 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::{io, path::{Path, PathBuf}};
 
-use clap::{command, Parser, Subcommand};
+use clap::{command, Command, CommandFactory, Parser, Subcommand};
+use clap_complete::{generate, Generator, Shell};
 use miette::{bail, Diagnostic, Result};
 use thiserror::Error;
 use walkdir::WalkDir;
@@ -17,6 +18,9 @@ struct Args {
 
     #[arg(short, env = "HOME")]
     base_directory: PathBuf,
+
+    #[command(flatten)]
+    verbose: clap_verbosity_flag::Verbosity
 }
 
 #[derive(Subcommand, Debug)]
@@ -24,11 +28,16 @@ enum Commands {
     /// Adds a dotfile to the dotfiles and links it back to its original place
     Add { file: PathBuf },
     /// Remove a dotfile and any potential symlink, can be pointed both at the symlink and the original
+    #[command(alias = "rm")]
     Remove { file: PathBuf },
     /// Links or relinks all dotfiles
+    #[command(alias = "ln")]
     Link,
     /// Lists all dotfiles
+    #[command(alias = "ls")]
     List,
+    /// Generate shell completions
+    Completions { shell: Shell }
 }
 
 #[derive(Error, Diagnostic, Debug)]
@@ -65,6 +74,10 @@ enum DofiError {
 fn main() -> Result<()> {
     let args = Args::parse();
 
+    env_logger::Builder::new()
+        .filter_level(args.verbose.log_level_filter())
+        .init();
+
     let base_directory = args.base_directory.canonicalize().map_err(|e| DofiError::InvalidBaseDirectory(e, args.base_directory))?;
     let dotfiles_directory = args.dotfiles_directory.canonicalize().map_err(|e| DofiError::InvalidDotfilesDirectory(e, args.dotfiles_directory))?;
 
@@ -74,24 +87,33 @@ fn main() -> Result<()> {
                 bail!(DofiError::FileIsNotRegular(file.to_path_buf()))
             }
             let file = file.canonicalize().map_err(DofiError::GenericIoError)?;
-            add_file(&file, &base_directory, &dotfiles_directory)
+            add_file(&file, &base_directory, &dotfiles_directory)?;
         }
         Commands::Link => {
-            link_files(&base_directory, &dotfiles_directory)
+            link_files(&base_directory, &dotfiles_directory)?;
         },
         Commands::List => {
-            list_files(&dotfiles_directory)
+            list_files(&dotfiles_directory)?;
         },
         Commands::Remove { file } => {
             if !file.is_file() {
                 bail!(DofiError::FileIsNotRegular(file.to_path_buf()))
             }
             let file = file.canonicalize().map_err(DofiError::GenericIoError)?;
-            remove_file(&file, &base_directory, &dotfiles_directory)
+            remove_file(&file, &base_directory, &dotfiles_directory)?;
+        },
+        Commands::Completions { shell } => {
+            let mut cmd = Args::command();
+            print_completions(shell, &mut cmd);
         }
-    }?;
+            
+    };
 
     Ok(())
+}
+
+fn print_completions<G: Generator>(gen: G, cmd: &mut Command) {
+    generate(gen, cmd, cmd.get_name().to_string(), &mut io::stdout());
 }
 
 fn remove_file(file: &Path, base_directory: &Path, dotfiles_directory: &Path) -> Result<(), DofiError> {
