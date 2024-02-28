@@ -130,8 +130,10 @@ fn remove_file(file: &Path, base_directory: &Path, dotfiles_directory: &Path) ->
 
     let symlink = file.strip_prefix(dotfiles_directory).map(|relative_file| base_directory.join(relative_file)).map_err(|_| DofiError::BaseIsNotPrefixOfFile(base_directory.to_path_buf(), file.to_path_buf()))?;
 
-    info!("Removing symlink '{}'", symlink.display());
-    let _ = std::fs::remove_file(symlink);
+    if symlink.symlink_metadata().is_ok() {
+        info!("Removing symlink '{}'", symlink.display());
+        let _ = std::fs::remove_file(symlink);
+    }
 
     Ok(())
 }
@@ -177,9 +179,9 @@ fn link_files(base_directory: &Path, dotfiles_directory: &Path, force: bool) -> 
             std::fs::create_dir_all(parent)?;
         }
 
-        if force {
-            info!("Removing symlink '{}'", symlink.display());
-            let _ = std::fs::remove_file(&symlink);
+        if force && symlink.symlink_metadata().is_ok() {
+            info!("Removing existing file '{}'", symlink.display());
+            std::fs::remove_file(&symlink)?;
         }
 
         info!("Symlinking '{}' at '{}'", file.path().display(), symlink.display());
