@@ -189,6 +189,7 @@ dependencies = [
  "clap-verbosity-flag",
  "clap_complete",
  "env_logger",
+ "log",
  "miette",
  "thiserror",
  "walkdir",

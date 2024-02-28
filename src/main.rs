@@ -2,6 +2,7 @@ use std::{io, path::{Path, PathBuf}};
 
 use clap::{command, Command, CommandFactory, Parser, Subcommand};
 use clap_complete::{generate, Generator, Shell};
+use log::info;
 use miette::{bail, Diagnostic, Result};
 use thiserror::Error;
 use walkdir::WalkDir;
@@ -32,7 +33,10 @@ enum Commands {
     Remove { file: PathBuf },
     /// Links or relinks all dotfiles
     #[command(alias = "ln")]
-    Link,
+    Link {
+        #[arg(short, long, default_value_t = false)]
+        force: bool
+    },
     /// Lists all dotfiles
     #[command(alias = "ls")]
     List,
@@ -89,8 +93,8 @@ fn main() -> Result<()> {
             let file = file.canonicalize().map_err(DofiError::GenericIoError)?;
             add_file(&file, &base_directory, &dotfiles_directory)?;
         }
-        Commands::Link => {
-            link_files(&base_directory, &dotfiles_directory)?;
+        Commands::Link { force } => {
+            link_files(&base_directory, &dotfiles_directory, force)?;
         },
         Commands::List => {
             list_files(&dotfiles_directory)?;
@@ -121,10 +125,12 @@ fn remove_file(file: &Path, base_directory: &Path, dotfiles_directory: &Path) ->
         return Err(DofiError::FileIsNotADotfile(file.to_path_buf()))
     }
 
+    info!("Removing file '{}'", file.display());
     std::fs::remove_file(file)?;
 
     let symlink = file.strip_prefix(dotfiles_directory).map(|relative_file| base_directory.join(relative_file)).map_err(|_| DofiError::BaseIsNotPrefixOfFile(base_directory.to_path_buf(), file.to_path_buf()))?;
 
+    info!("Removing symlink '{}'", symlink.display());
     let _ = std::fs::remove_file(symlink);
 
     Ok(())
@@ -140,13 +146,15 @@ fn add_file(file: &Path, base_directory: &Path, dotfiles_directory: &Path) -> Re
         std::fs::create_dir_all(parent)?;
     }
 
+    info!("Moving '{}' to '{}'", file.display(), new_file.display());
     std::fs::rename(file, &new_file)?;
+    info!("Symlinking '{}' at '{}'", new_file.display(), file.display());
     std::os::unix::fs::symlink(&new_file, file)?;
 
     Ok(())
 }
 
-fn link_files(base_directory: &Path, dotfiles_directory: &Path) -> Result<(), DofiError> {
+fn link_files(base_directory: &Path, dotfiles_directory: &Path, force: bool) -> Result<(), DofiError> {
     let walker = WalkDir::new(dotfiles_directory).into_iter().filter(|e| {
         if let Ok(e) = e {
             e.file_type().is_file()
@@ -165,10 +173,17 @@ fn link_files(base_directory: &Path, dotfiles_directory: &Path) -> Result<(), Do
             .map_err(|_| DofiError::BaseIsNotPrefixOfFile(base_directory.to_path_buf(), file.path().to_path_buf()))?;
 
         if let Some(parent) = symlink.parent() {
+            info!("Create folder '{}'", parent.display());
             std::fs::create_dir_all(parent)?;
         }
 
-        std::os::unix::fs::symlink(file.path(), symlink)?
+        if force {
+            info!("Removing symlink '{}'", symlink.display());
+            let _ = std::fs::remove_file(&symlink);
+        }
+
+        info!("Symlinking '{}' at '{}'", file.path().display(), symlink.display());
+        std::os::unix::fs::symlink(file.path(), &symlink)?
     }
 
     Ok(())
