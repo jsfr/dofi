@@ -1,14 +1,15 @@
 use std::{
     io,
+    iter::Filter,
     path::{Path, PathBuf},
 };
 
 use clap::{command, Command, CommandFactory, Parser, Subcommand};
 use clap_complete::{generate, Generator, Shell};
+use ignore::{overrides::OverrideBuilder, WalkBuilder};
 use log::info;
 use miette::{bail, Diagnostic, Result};
 use thiserror::Error;
-use walkdir::WalkDir;
 
 /// A simple dotfile manager, inspired by stow
 #[derive(Parser, Debug)]
@@ -70,8 +71,8 @@ enum DofiError {
     InvalidDotfilesDirectory(std::io::Error, PathBuf),
 
     #[error(transparent)]
-    #[diagnostic(code(dofi::walkdir_error))]
-    ListDirectoryFailed(#[from] walkdir::Error),
+    #[diagnostic(code(dofi::ignore_error))]
+    ListDirectoryFailed(#[from] ignore::Error),
 
     #[error("File '{}' is not a dotfile", .0.display())]
     #[diagnostic(code(dofi::file_is_not_a_dotfile))]
@@ -188,13 +189,7 @@ fn link_files(
     dotfiles_directory: &Path,
     force: bool,
 ) -> Result<(), DofiError> {
-    let walker = WalkDir::new(dotfiles_directory).into_iter().filter(|e| {
-        if let Ok(e) = e {
-            e.file_type().is_file()
-        } else {
-            true
-        }
-    });
+    let walker = build_walker(dotfiles_directory)?;
 
     for entry in walker {
         let file = entry?;
@@ -232,17 +227,30 @@ fn link_files(
 }
 
 fn list_files(dotfiles_directory: &Path) -> Result<(), DofiError> {
-    let walker = WalkDir::new(dotfiles_directory).into_iter().filter(|e| {
-        if let Ok(e) = e {
-            e.file_type().is_file()
-        } else {
-            true
-        }
-    });
-
+    let walker = build_walker(dotfiles_directory)?;
     for entry in walker {
         println!("{}", entry?.path().display());
     }
 
     Ok(())
+}
+
+fn build_walker(
+    path: &Path,
+) -> Result<
+    Filter<ignore::Walk, impl FnMut(&Result<ignore::DirEntry, ignore::Error>) -> bool>,
+    DofiError,
+> {
+    let mut overrides = OverrideBuilder::new(path);
+    overrides.add("!.git/")?;
+    let overrides = overrides.build()?;
+
+    Ok(WalkBuilder::new(path)
+        .hidden(false)
+        .overrides(overrides)
+        .build()
+        .filter(|entry| match entry {
+            Ok(entry) if entry.file_type().is_some() => entry.file_type().unwrap().is_file(),
+            _ => true,
+        }))
 }
